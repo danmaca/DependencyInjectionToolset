@@ -12,139 +12,186 @@ using System.Threading.Tasks;
 
 namespace IntroduceFieldRefactoring
 {
-    [ExportCodeRefactoringProvider(LanguageNames.CSharp, Name = nameof(IntroduceFieldRefactoringCodeRefactoringProvider)), Shared]
-    internal class IntroduceFieldRefactoringCodeRefactoringProvider : CodeRefactoringProvider
-    {
-        public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
-        {
-            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
-            var node = root.FindNode(context.Span);
+	[ExportCodeRefactoringProvider(LanguageNames.CSharp, Name = nameof(IntroduceFieldRefactoringCodeRefactoringProvider)), Shared]
+	internal class IntroduceFieldRefactoringCodeRefactoringProvider : CodeRefactoringProvider
+	{
+		public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
+		{
+			var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+			var node = root.FindNode(context.Span);
 
-            ParameterSyntax parameter = null;
-            if (node is ParameterListSyntax pls)
-            {
-                var parameterList = pls;
+			ParameterSyntax parameter = null;
+			if (node is ParameterListSyntax pls)
+			{
+				var parameterList = pls;
 
-                parameter = parameterList.Parameters.SingleOrDefault(p => p.Span.Contains(context.Span));
-                if (parameter == null)
-                {
-                    return;
-                }
-            }
-            else if (node is ParameterSyntax ps)
-            {
-                parameter = ps;
-            }
-            else if (node is IdentifierNameSyntax ins)
-            {
-                var identifier = ins;
-                parameter = identifier.Parent as ParameterSyntax;
-            }
+				parameter = parameterList.Parameters.SingleOrDefault(p => p.Span.Contains(context.Span));
+				if (parameter == null)
+				{
+					return;
+				}
+			}
+			else if (node is ParameterSyntax ps)
+			{
+				parameter = ps;
+			}
+			else if (node is IdentifierNameSyntax ins)
+			{
+				var identifier = ins;
+				parameter = identifier.Parent as ParameterSyntax;
+			}
 
-            if (parameter == null)
-            {
-                return;
-            }
+			if (parameter == null)
+			{
+				return;
+			}
 
-            var parameterName = GetParameterName(parameter);
-            if (string.IsNullOrEmpty(parameterName) || !(parameter.Parent.Parent is ConstructorDeclarationSyntax))
-            {
-                return;
-            }
+			var parameterName = GetParameterName(parameter);
+			if (string.IsNullOrEmpty(parameterName) || !(parameter.Parent.Parent is ConstructorDeclarationSyntax))
+			{
+				return;
+			}
 
-            if (!VariableExists(root, "_" + parameterName))
-            {
-                var action = CodeAction.Create("Introduce and initialize field '_" + parameterName + "'", ct => CreateFieldAsync(context, parameter, parameterName, ct, true));
-                context.RegisterRefactoring(action);
-            }
+			if (!VariableExists(root, "_" + parameterName))
+			{
+				var action = CodeAction.Create("Introduce and initialize field '_" + parameterName + "'", ct => CreateFieldAsync(context, parameter, parameterName, ct, true));
+				context.RegisterRefactoring(action);
+			}
 
-            if (!VariableExists(root, parameterName))
-            {
-                var action2 = CodeAction.Create("Introduce and initialize field 'this." + parameterName + "'", ct => CreateFieldAsync(context, parameter, parameterName, ct));
-                context.RegisterRefactoring(action2);
-            }
-        }
+			//if (!VariableExists(root, parameterName))
+			//{
+			//	var action2 = CodeAction.Create("Introduce and initialize field 'this." + parameterName + "'", ct => CreateFieldAsync(context, parameter, parameterName, ct));
+			//	context.RegisterRefactoring(action2);
+			//}
+		}
 
-        private async Task<Document> CreateFieldAsync(CodeRefactoringContext context, ParameterSyntax parameter,
-            string paramName, CancellationToken cancellationToken, bool useUnderscore = false)
-        {           
-                var guard = CreateGuard(context, paramName);
-                ExpressionSyntax assignment = CreateAssignment(context, paramName, useUnderscore);
-                var oldConstructor = parameter.Ancestors().OfType<ConstructorDeclarationSyntax>().First();
-                var newConstructor = oldConstructor.WithBody(oldConstructor.Body.AddStatements(
-                     guard, SyntaxFactory.ExpressionStatement(assignment)));
+		private async Task<Document> CreateFieldAsync(CodeRefactoringContext context, ParameterSyntax parameter,
+			 string paramName, CancellationToken cancellationToken, bool useUnderscore = false)
+		{
+			var guard = CreateGuard(context, paramName);
+			ExpressionSyntax assignment = CreateAssignment(context, paramName, useUnderscore);
+			var oldConstructor = parameter.Ancestors().OfType<ConstructorDeclarationSyntax>().First();
+			var newConstructor = oldConstructor.WithBody(oldConstructor.Body.AddStatements(
+				  guard, SyntaxFactory.ExpressionStatement(assignment)));
 
-                var oldClass = parameter.FirstAncestorOrSelf<ClassDeclarationSyntax>();
-                var oldClassWithNewCtor = oldClass.ReplaceNode(oldConstructor, newConstructor);
+			var oldClass = parameter.FirstAncestorOrSelf<ClassDeclarationSyntax>();
+			var oldClassWithNewCtor = oldClass.ReplaceNode(oldConstructor, newConstructor);
 
-                var fieldDeclaration = CreateFieldDeclaration(GetParameterType(parameter), paramName, useUnderscore);
-                var newClass = oldClassWithNewCtor
-                    .WithMembers(oldClassWithNewCtor.Members.Insert(0, fieldDeclaration))
-                    .WithAdditionalAnnotations(Formatter.Annotation);
+			var fieldDeclaration = CreateFieldDeclaration(GetParameterType(parameter), paramName, useUnderscore);
 
-                var oldRoot = await context.Document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                var newRoot = oldRoot.ReplaceNode(oldClass, newClass);
+			var lastFieldDeclaration = oldClassWithNewCtor.Members.OfType<FieldDeclarationSyntax>().LastOrDefault();
+			var newClassMembers = oldClassWithNewCtor.Members;
+			if (lastFieldDeclaration == null)
+				newClassMembers = oldClassWithNewCtor.Members.Insert(0, fieldDeclaration);
+			else
+				newClassMembers = oldClassWithNewCtor.Members.Insert(oldClassWithNewCtor.Members.IndexOf(lastFieldDeclaration) + 1, fieldDeclaration);
 
-                return context.Document.WithSyntaxRoot(newRoot);           
-        }
+			var newClass = oldClassWithNewCtor
+				 .WithMembers(newClassMembers)
+				 .WithAdditionalAnnotations(Formatter.Annotation);
 
-        private StatementSyntax CreateGuard(CodeRefactoringContext context, string paramName)
-        {
-            return
-            SyntaxFactory.IfStatement(
-                                        SyntaxFactory.BinaryExpression(
-                                            SyntaxKind.EqualsExpression,
-                                            SyntaxFactory.IdentifierName(paramName),
-                                            SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)
-                                         ),
-                                        SyntaxFactory.ThrowStatement(
-                                            SyntaxFactory.ObjectCreationExpression(
-                                                SyntaxFactory.IdentifierName(nameof(ArgumentNullException)),
-                                                                             SyntaxFactory.ArgumentList().AddArguments(
-                                                                                 SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(SyntaxFactory.IdentifierName(paramName).Identifier.ToString())))
-                                                                             ),
-                                                                             null
-                                                                                  )
-                                                                      )
-                                                             );
-        }
+			var oldRoot = await context.Document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+			var newRoot = oldRoot.ReplaceNode(oldClass, newClass);
 
-        private ExpressionSyntax CreateAssignment(CodeRefactoringContext context, string paramName, bool useUnderscore)
-        {
-            ExpressionSyntax assignment =
-                SyntaxFactory.AssignmentExpression(
-                    SyntaxKind.SimpleAssignmentExpression,
-                    useUnderscore ? (ExpressionSyntax)SyntaxFactory.IdentifierName("_" + paramName) : SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, SyntaxFactory.ThisExpression(), SyntaxFactory.IdentifierName(paramName)),
-                    SyntaxFactory.IdentifierName(paramName)
-                );
-            return assignment;
-        }
+			return context.Document.WithSyntaxRoot(newRoot);
+		}
 
-        public static bool VariableExists(SyntaxNode root, params string[] variableNames)
-        {
-            return root
-                .DescendantNodes()
-                .OfType<VariableDeclarationSyntax>()
-                .SelectMany(ps => ps.DescendantTokens().Where(t => t.IsKind(SyntaxKind.IdentifierToken) && variableNames.Contains(t.ValueText)))
-                .Any();
-        }
+		private StatementSyntax CreateGuard(CodeRefactoringContext context, string paramName)
+		{
+			//return
+			//SyntaxFactory.IfStatement(
+			//                            SyntaxFactory.BinaryExpression(
+			//                                SyntaxKind.EqualsExpression,
+			//                                SyntaxFactory.IdentifierName(paramName),
+			//                                SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)
+			//                             ),
+			//                            SyntaxFactory.ThrowStatement(
+			//                                SyntaxFactory.ObjectCreationExpression(
+			//                                    SyntaxFactory.IdentifierName(nameof(ArgumentNullException)),
+			//                                                                 SyntaxFactory.ArgumentList().AddArguments(
+			//                                                                     SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(SyntaxFactory.IdentifierName(paramName).Identifier.ToString())))
+			//                                                                 ),
+			//                                                                 null
+			//                                                                      )
+			//                                                          )
+			//                                                 );
 
-        public static string GetParameterType(ParameterSyntax parameter)
-        {
-            return parameter.DescendantNodes().First(node => node is TypeSyntax).GetFirstToken().ValueText;
-        }
+			return SyntaxFactory.ExpressionStatement(
+			  SyntaxFactory.InvocationExpression(
+					SyntaxFactory.MemberAccessExpression(
+						 SyntaxKind.SimpleMemberAccessExpression,
+						 SyntaxFactory.IdentifierName(
+							  @"Guard"),
+						 SyntaxFactory.IdentifierName(
+							  @"ArgumentNotNull"))
+					.WithOperatorToken(
+						 SyntaxFactory.Token(
+							  SyntaxKind.DotToken)))
+			  .WithArgumentList(
+					SyntaxFactory.ArgumentList(
+						 SyntaxFactory.SeparatedList(new[] {
+							  SyntaxFactory.Argument(
+									SyntaxFactory.LiteralExpression(
+										 SyntaxKind.StringLiteralExpression,
+										 SyntaxFactory.Literal(
+											  SyntaxFactory.TriviaList(),
+											  paramName,
+											  paramName,
+											  SyntaxFactory.TriviaList()))),
 
-        private static string GetParameterName(ParameterSyntax parameter)
-        {
-            return parameter.DescendantTokens().Where(t => t.IsKind(SyntaxKind.IdentifierToken)).Last().ValueText;
-        }
+							  SyntaxFactory.Argument(
+									SyntaxFactory.LiteralExpression(
+										 SyntaxKind.StringLiteralExpression,
+										 SyntaxFactory.Literal(
+											  SyntaxFactory.TriviaList(),
+											  $"nameof({paramName})",
+											  $"nameof({paramName})",
+											  SyntaxFactory.TriviaList())))
+						 }))
+					.WithOpenParenToken(
+						 SyntaxFactory.Token(
+							  SyntaxKind.OpenParenToken))
+					.WithCloseParenToken(
+						 SyntaxFactory.Token(
+							  SyntaxKind.CloseParenToken))));
+		}
 
-        private static FieldDeclarationSyntax CreateFieldDeclaration(string type, string name, bool useUnderscore = false)
-        {
-            return SyntaxFactory.FieldDeclaration(
-                SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName(type))
-                .WithVariables(SyntaxFactory.SingletonSeparatedList(SyntaxFactory.VariableDeclarator(SyntaxFactory.Identifier(useUnderscore ? "_" + name : name)))))
-                .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PrivateKeyword), SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword)));
-        }
-    }
+		private ExpressionSyntax CreateAssignment(CodeRefactoringContext context, string paramName, bool useUnderscore)
+		{
+			ExpressionSyntax assignment =
+				 SyntaxFactory.AssignmentExpression(
+					  SyntaxKind.SimpleAssignmentExpression,
+					  useUnderscore ? (ExpressionSyntax)SyntaxFactory.IdentifierName("_" + paramName) : SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, SyntaxFactory.ThisExpression(), SyntaxFactory.IdentifierName(paramName)),
+					  SyntaxFactory.IdentifierName(paramName)
+				 );
+			return assignment;
+		}
+
+		public static bool VariableExists(SyntaxNode root, params string[] variableNames)
+		{
+			return root
+				 .DescendantNodes()
+				 .OfType<VariableDeclarationSyntax>()
+				 .SelectMany(ps => ps.DescendantTokens().Where(t => t.IsKind(SyntaxKind.IdentifierToken) && variableNames.Contains(t.ValueText)))
+				 .Any();
+		}
+
+		public static string GetParameterType(ParameterSyntax parameter)
+		{
+			return parameter.DescendantNodes().First(node => node is TypeSyntax).GetFirstToken().ValueText;
+		}
+
+		private static string GetParameterName(ParameterSyntax parameter)
+		{
+			return parameter.DescendantTokens().Where(t => t.IsKind(SyntaxKind.IdentifierToken)).Last().ValueText;
+		}
+
+		private static FieldDeclarationSyntax CreateFieldDeclaration(string type, string name, bool useUnderscore = false)
+		{
+			return SyntaxFactory.FieldDeclaration(
+				 SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName(type))
+				 .WithVariables(SyntaxFactory.SingletonSeparatedList(SyntaxFactory.VariableDeclarator(SyntaxFactory.Identifier(useUnderscore ? "_" + name : name)))))
+				 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PrivateKeyword), SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword)));
+		}
+	}
 }
