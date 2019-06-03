@@ -1,3 +1,4 @@
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeRefactorings;
@@ -68,11 +69,10 @@ namespace IntroduceFieldRefactoring
 		private async Task<Document> CreateFieldAsync(CodeRefactoringContext context, ParameterSyntax parameter,
 			 string paramName, CancellationToken cancellationToken, bool useUnderscore = false)
 		{
-			var guard = CreateGuard(context, paramName);
-			ExpressionSyntax assignment = CreateAssignment(context, paramName, useUnderscore);
+			var guard = CreateGuard(context, paramName, useUnderscore);
 			var oldConstructor = parameter.Ancestors().OfType<ConstructorDeclarationSyntax>().First();
 			var newConstructor = oldConstructor.WithBody(oldConstructor.Body.AddStatements(
-				  guard, SyntaxFactory.ExpressionStatement(assignment)));
+				  guard));
 
 			var oldClass = parameter.FirstAncestorOrSelf<ClassDeclarationSyntax>();
 			var oldClassWithNewCtor = oldClass.ReplaceNode(oldConstructor, newConstructor);
@@ -96,7 +96,7 @@ namespace IntroduceFieldRefactoring
 			return context.Document.WithSyntaxRoot(newRoot);
 		}
 
-		private StatementSyntax CreateGuard(CodeRefactoringContext context, string paramName)
+		private StatementSyntax CreateGuard(CodeRefactoringContext context, string paramName, bool useUnderscore)
 		{
 			//return
 			//SyntaxFactory.IfStatement(
@@ -116,7 +116,11 @@ namespace IntroduceFieldRefactoring
 			//                                                          )
 			//                                                 );
 
-			return SyntaxFactory.ExpressionStatement(
+			var expression =
+				 SyntaxFactory.AssignmentExpression(
+					  SyntaxKind.SimpleAssignmentExpression,
+					  useUnderscore ? (ExpressionSyntax)SyntaxFactory.IdentifierName("_" + paramName) : SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, SyntaxFactory.ThisExpression(), SyntaxFactory.IdentifierName(paramName)),
+					  
 			  SyntaxFactory.InvocationExpression(
 					SyntaxFactory.MemberAccessExpression(
 						 SyntaxKind.SimpleMemberAccessExpression,
@@ -154,6 +158,8 @@ namespace IntroduceFieldRefactoring
 					.WithCloseParenToken(
 						 SyntaxFactory.Token(
 							  SyntaxKind.CloseParenToken))));
+
+			return SyntaxFactory.ExpressionStatement(expression);
 		}
 
 		private ExpressionSyntax CreateAssignment(CodeRefactoringContext context, string paramName, bool useUnderscore)
